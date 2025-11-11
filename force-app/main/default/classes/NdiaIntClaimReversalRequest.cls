@@ -1,157 +1,79 @@
 public with sharing class NdiaIntClaimReversalRequest {
-    static final String NAMED_CREDENTIAL = 'DefaultNDIACredential';
-    
-    @InvocableMethod(label='Process Claim Reversal Request')
-public static void processRequests(List<Claim_Reversal_Request__c> records) {
-    if (records == null || records.isEmpty()) return;
+    private static final Integer BATCH_SIZE = 10;
 
-    for (Claim_Reversal_Request__c req : records) {
+    @InvocableMethod(label='Process Claim Reversal Request')
+    public static void processRequests(List<Claim_Reversal_Request__c> requests) {
+        if (requests == null || requests.isEmpty()) return;
+
+        // We only ever expect one record
+        Claim_Reversal_Request__c req = requests[0];
+
         try {
-            // 1. Find attached CSV
+            // 1. Find the CSV attachment
             List<ContentDocumentLink> links = [
                 SELECT ContentDocumentId 
-                FROM ContentDocumentLink 
+                FROM ContentDocumentLink
                 WHERE LinkedEntityId = :req.Id
-                LIMIT 1
             ];
 
             if (links.isEmpty()) {
-                System.debug('No attached CSV found for record ' + req.Id);
-                continue;
+                System.debug('No attachments found for record ' + req.Id);
+                return;
             }
 
-            Id contentDocId = links[0].ContentDocumentId;
-            ContentVersion cv = [
-                SELECT VersionData 
-                FROM ContentVersion 
-                WHERE
-                    ContentDocumentId = :contentDocId AND
-                    Title LIKE 'Reversals%'
-                ORDER BY CreatedDate DESC 
+            // 2. Extract the Ids
+            Set<Id> docIds = new Set<Id>();
+            for (ContentDocumentLink link : links) {
+                docIds.add(link.ContentDocumentId);
+            }
+
+            // 3. Find ContentVersion whose Title starts with "Reversals"
+            List<ContentVersion> cvs = [
+                SELECT VersionData, Title
+                FROM ContentVersion
+                WHERE ContentDocumentId IN :docIds
+                AND Title LIKE 'Reversals%'
+                ORDER BY CreatedDate DESC
                 LIMIT 1
             ];
 
-            // 2. Get CSV text
+            if (cvs.isEmpty()) {
+                System.debug('No attached CSV with title starting with "Reversals" found for record ' + req.Id);
+                return;
+            }
+
+            ContentVersion cv = cvs[0];
+
+
             String csvBody = cv.VersionData.toString();
             List<List<String>> rows = parseCsv(csvBody);
-            if (rows.isEmpty()) continue;
+            if (rows.isEmpty()) return;
 
-            List<String> headers = rows[0];
+            System.debug('Parsed ' + rows.size() + ' rows from CSV.');
 
-            // Add result columns
-            headers.addAll(new List<String>{'Success_Fail', 'Error_Message'});
-
-            // Find required column indexes
-            Integer idxNdisNumber = headers.indexOf('Client: NDIS Number');
-            Integer idxClaimNumber = headers.indexOf('Original SDR: Current NDIS Extract Item: Payment Request Number');
-
-            if (idxClaimNumber == -1 || idxNdisNumber == -1) {
-                throw new AuraHandledException('Missing required columns in CSV.');
-            }
-
-            // Lists to hold output rows
-            List<List<String>> allResults = new List<List<String>>();
-            List<List<String>> successResults = new List<List<String>>();
-            List<List<String>> errorResults = new List<List<String>>();
-
-            // Add headers to all result lists
-            allResults.add(headers);
-            successResults.add(headers);
-            errorResults.add(headers);
-
-            // 3. Process each CSV row
-            for (Integer i = 1; i < rows.size(); i++) {
-                List<String> row = rows[i];
-                String claimNumber = row.size() > idxClaimNumber ? row[idxClaimNumber] : null;
-                String ndisNumber = row.size() > idxNdisNumber ? row[idxNdisNumber] : null;
-                String resultType;
-                String message;
-
-                if (String.isBlank(claimNumber) || String.isBlank(ndisNumber)) {
-                    resultType = 'Fail';
-                    message = 'Missing Claim or NDIS Number';
-                } else {
-                    try {
-                        HttpResponse response = cancelClaim(claimNumber, ndisNumber);
-                        if (response != null && response.getStatusCode() == 200) {
-                            resultType = 'Success';
-                            message = response.getBody();
-                        } else {
-                            resultType = 'Fail';
-                            message = response != null ? response.getBody() : 'No response';
-                        }
-                    } catch (Exception ex) {
-                        resultType = 'Fail';
-                        message = ex.getMessage();
-                    }
-                }
-
-                // Clone the row to avoid mutating original list
-                List<String> resultRow = new List<String>(row);
-                resultRow.add(resultType);
-                resultRow.add(message);
-
-                allResults.add(resultRow);
-                if (resultType == 'Success') {
-                    successResults.add(resultRow);
-                } else {
-                    errorResults.add(resultRow);
-                }
-            }
-
-            // 4. Generate file names with timestamp
-            Datetime nowDt = Datetime.now();
-            String timestamp = nowDt.format('yyyyMMdd_HHmmss');
-            String baseName = 'NDIS_' + timestamp + '_Result';
-
-            // 5. Build CSVs and attach all three
-            attachCsv(req.Id, baseName + '.csv', buildCsv(allResults));
-            attachCsv(req.Id, baseName + '_Success.csv', buildCsv(successResults));
-            attachCsv(req.Id, baseName + '_Fail.csv', buildCsv(errorResults));
+            // 2. Start the first queueable batch
+            System.enqueueJob(new ClaimReversalQueueable(
+                req.Id,
+                rows,
+                0,
+                BATCH_SIZE,
+                new List<List<String>>(), // all
+                new List<List<String>>(), // success
+                new List<List<String>>()  // fail
+            ));
 
         } catch (Exception e) {
-            System.debug('Error processing record ' + req.Id + ': ' + e.getMessage());
+            System.debug('Error starting processing for record ' + req.Id + ': ' + e.getMessage());
         }
     }
-}
-    
-    // === Helper methods ===
-    
-    private static String buildCsv(List<List<String>> rows) {
-        List<String> lines = new List<String>();
-        for (List<String> row : rows) {
-            List<String> escaped = new List<String>();
-            for (String cell : row) {
-                if (cell == null) cell = '';
-                if (cell.contains('"') || cell.contains(',') || cell.contains('\n')) {
-                    cell = '"' + cell.replace('"', '""') + '"';
-                }
-                escaped.add(cell);
-            }
-            lines.add(String.join(escaped, ','));
-        }
-        return String.join(lines, '\n');
-    }
-    
-    private static void attachCsv(Id parentId, String title, String csvBody) {
-        ContentVersion contentVersion = new ContentVersion();
-        contentVersion.Title = title;
-        contentVersion.PathOnClient = contentVersion.Title + '.csv';
-        contentVersion.VersionData = Blob.valueOf(csvBody);
-        contentVersion.ContentLocation = 'S';
-        
-        insert contentVersion;
-        
-        // Run async so ContentDocumentId is ready
-		System.enqueueJob(new LinkContentDocumentJob(parentId, contentVersion.Id));
-    }
-    
+
+    // === Helper: simple CSV parser ===
     public static List<List<String>> parseCsv(String csv) {
         List<List<String>> allRows = new List<List<String>>();
         List<String> currentRow = new List<String>();
         String currentValue = '';
         Boolean inQuotes = false;
-        
+
         for (Integer i = 0; i < csv.length(); i++) {
             String ch = csv.substring(i, i+1);
             if (ch == '"') {
@@ -175,39 +97,11 @@ public static void processRequests(List<Claim_Reversal_Request__c> records) {
                 currentValue += ch;
             }
         }
-        
         if (currentValue != '' || currentRow.size() > 0) {
             currentRow.add(currentValue);
             allRows.add(currentRow);
         }
-        
-        return allRows;
-    }
-    
-    public static HttpResponse cancelClaim(String claimNumber, String ndisNumber) {
-        System.debug('claimNumber: ' + claimNumber);
-        System.debug('ndisNumber: ' + ndisNumber);
-        String endpointUrl = getUrl(claimNumber);
-        
-        System.debug('endpointUrl: ' + endpointUrl);
-        
-        HttpRequest request = new HttpRequest();
-        request.setEndpoint(endpointUrl);
-        request.setMethod('PATCH');
-        request.setTimeout(120000);
-        request.setHeader('participant', ndisNumber);
-        
-        System.debug('request: ' + request);
-        
-        Http http = new Http();
-        HTTPResponse response = http.send(request);
-        
-        System.debug('response: ' + response);
 
-        return response;
-    }
-    
-    public static String getUrl(String claimNumber){
-        return 'callout:' + NAMED_CREDENTIAL + '/ndia-middleware/v1/4.0/payments/' + claimNumber;
+        return allRows;
     }
 }
