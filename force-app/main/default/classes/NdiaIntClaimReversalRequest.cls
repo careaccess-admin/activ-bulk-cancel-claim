@@ -24,7 +24,9 @@ public static void processRequests(List<Claim_Reversal_Request__c> records) {
             ContentVersion cv = [
                 SELECT VersionData 
                 FROM ContentVersion 
-                WHERE ContentDocumentId = :contentDocId 
+                WHERE
+                    ContentDocumentId = :contentDocId AND
+                    Title LIKE 'Reversals%'
                 ORDER BY CreatedDate DESC 
                 LIMIT 1
             ];
