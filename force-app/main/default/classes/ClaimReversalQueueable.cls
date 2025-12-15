@@ -1,5 +1,7 @@
 public with sharing class ClaimReversalQueueable implements Queueable, Database.AllowsCallouts {
     private Id parentId;
+    private String parentName;
+    private String deviceName;
     private List<List<String>> rows;
     private Integer startIndex;
     private Integer batchSize;
@@ -7,10 +9,10 @@ public with sharing class ClaimReversalQueueable implements Queueable, Database.
     private List<List<String>> successResults;
     private List<List<String>> failResults;
 
-    private static final String NAMED_CREDENTIAL = 'DefaultNDIACredential';
-
     public ClaimReversalQueueable(
         Id parentId,
+        String parentName,
+        String deviceName,
         List<List<String>> rows,
         Integer startIndex,
         Integer batchSize,
@@ -19,6 +21,8 @@ public with sharing class ClaimReversalQueueable implements Queueable, Database.
         List<List<String>> failResults
     ) {
         this.parentId = parentId;
+        this.parentName = parentName;
+        this.deviceName = deviceName;
         this.rows = rows;
         this.startIndex = startIndex;
         this.batchSize = batchSize;
@@ -69,7 +73,7 @@ public with sharing class ClaimReversalQueueable implements Queueable, Database.
                     message = 'Missing Claim or NDIS Number';
                 } else {
                     try {
-                        HttpResponse response = cancelClaim(claimNumber, ndisNumber);
+                        HttpResponse response = cancelClaim(claimNumber, ndisNumber, deviceName);
                         if (response != null && response.getStatusCode() == 200) {
                             resultType = 'Success';
                             message = response.getBody();
@@ -98,7 +102,7 @@ public with sharing class ClaimReversalQueueable implements Queueable, Database.
             // If more rows remain, chain next queueable
             if (endIndex < rows.size()) {
                 System.enqueueJob(new ClaimReversalQueueable(
-                    parentId, rows, endIndex, batchSize, allResults, successResults, failResults
+                    parentId, parentName, deviceName, rows, endIndex, batchSize, allResults, successResults, failResults
                 ));
             } else {
                 // Finished all rows, attach results
@@ -109,6 +113,8 @@ public with sharing class ClaimReversalQueueable implements Queueable, Database.
                 attachCsv(parentId, baseName + '.csv', buildCsv(allResults));
                 attachCsv(parentId, baseName + '_Success.csv', buildCsv(successResults));
                 attachCsv(parentId, baseName + '_Fail.csv', buildCsv(failResults));
+                
+                sendBellNotification(parentId, parentName);
             }
 
         } catch (Exception e) {
@@ -117,9 +123,47 @@ public with sharing class ClaimReversalQueueable implements Queueable, Database.
     }
 
     // === Helper methods ===
+     
+    private static String getNotificationTypeId(){
+        CustomNotificationType notificationType = [SELECT Id 
+                                                   FROM CustomNotificationType 
+                                                   WHERE DeveloperName = 'NDIA_Integration_Notification' 
+                                                   LIMIT 1];
+        
+        return notificationType.Id;
+    }
+     
+    private static void sendBellNotification(String targetId, String targetName) {
+        Set<String> recipientIds = new Set<String>{UserInfo.getUserId()};
+        String title = targetName + ' | Bulk Claim Reversal';
+        String message = 'Your Claim Reversal Request finished processing. Click here to see the results!';
+        String notificationTypeId = getNotificationTypeId();
 
-    private static HttpResponse cancelClaim(String claimNumber, String ndisNumber) {
-        String endpointUrl = 'callout:' + NAMED_CREDENTIAL + '/ndia-middleware/v1/4.0/payments/' + claimNumber;
+        // Step 1: Stop if missing mandatory information
+        if(notificationTypeId == null || recipientIds == null) {
+            return;
+		}
+        
+        // Step 2: Create a new custom notification
+        Messaging.CustomNotification notification = new Messaging.CustomNotification();
+        
+        // Step 3: Set the notification details
+        notification.setTitle(title);
+        notification.setBody(message);
+        notification.setSenderId(UserInfo.getUserId()); // Optional: Set the sender (current user)
+        notification.setNotificationTypeId(notificationTypeId); // Link to your custom notification type
+        notification.setTargetId(targetId); // The record ID to link the notification to (e.g., an Opportunity or Case ID)
+        
+        // Step 4: Send the notification to the specified recipients
+        try {
+            notification.send(recipientIds);
+        } catch (Exception e) {
+            System.debug('Error sending notification: ' + e.getMessage());
+        }
+    }
+
+    private static HttpResponse cancelClaim(String claimNumber, String ndisNumber, String deviceName) {
+        String endpointUrl = 'callout:' + deviceName + '/ndia-middleware/v1/4.0/payments/' + claimNumber;
 
         HttpRequest request = new HttpRequest();
         request.setEndpoint(endpointUrl);

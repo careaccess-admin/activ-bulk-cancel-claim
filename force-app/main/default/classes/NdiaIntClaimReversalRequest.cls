@@ -1,5 +1,6 @@
 public with sharing class NdiaIntClaimReversalRequest {
     private static final Integer BATCH_SIZE = 10;
+    private static final String NAMED_CREDENTIAL = 'ndiaint__DefaultNDIACredential';
 
     @InvocableMethod(label='Process Claim Reversal Request')
     public static void processRequests(List<Claim_Reversal_Request__c> requests) {
@@ -49,11 +50,17 @@ public with sharing class NdiaIntClaimReversalRequest {
             List<List<String>> rows = parseCsv(csvBody);
             if (rows.isEmpty()) return;
 
-            System.debug('Parsed ' + rows.size() + ' rows from CSV.');
+            String deviceName = NAMED_CREDENTIAL;
+            
+            if(String.isBlank(req.Entity__c) == false) {
+                deviceName = req.Entity__c;
+            }
 
             // 2. Start the first queueable batch
             System.enqueueJob(new ClaimReversalQueueable(
                 req.Id,
+                req.Name,
+                deviceName,
                 rows,
                 0,
                 BATCH_SIZE,
