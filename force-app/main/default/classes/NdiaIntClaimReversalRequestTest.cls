@@ -15,7 +15,7 @@ private class NdiaIntClaimReversalRequestTest {
 
     @IsTest
     static void testProcessRequests_NoAttachment() {
-        Claim_Reversal_Request__c req = new Claim_Reversal_Request__c();
+        Claim_Reversal_Request__c req = new Claim_Reversal_Request__c(Entity__c = 'Test');
         insert req;
 
         Test.startTest();
@@ -28,7 +28,7 @@ private class NdiaIntClaimReversalRequestTest {
 
     @IsTest
     static void testProcessRequests_WrongTitleAttachment() {
-        Claim_Reversal_Request__c req = new Claim_Reversal_Request__c();
+        Claim_Reversal_Request__c req = new Claim_Reversal_Request__c(Entity__c = 'Test');
         insert req;
 
         ContentVersion cv = new ContentVersion(
@@ -54,7 +54,7 @@ private class NdiaIntClaimReversalRequestTest {
 
     @IsTest
     static void testProcessRequests_ValidCsv_SuccessfulEnqueue() {
-        Claim_Reversal_Request__c req = new Claim_Reversal_Request__c();
+        Claim_Reversal_Request__c req = new Claim_Reversal_Request__c(Entity__c = 'Test');
         insert req;
 
         // Create a valid CSV ContentVersion with title starting with "Reversals"
@@ -90,7 +90,7 @@ private class NdiaIntClaimReversalRequestTest {
     @IsTest
     static void testProcessRequests_ExceptionHandling() {
         // Force an exception by passing malformed data or bad query
-        Claim_Reversal_Request__c req = new Claim_Reversal_Request__c();
+        Claim_Reversal_Request__c req = new Claim_Reversal_Request__c(Entity__c = 'Test');
         insert req;
 
         // We'll cause a QueryException by making the SOQL invalid in test context indirectly

@@ -26,7 +26,7 @@ private class ClaimReversalQueueableTest {
         Test.setMock(HttpCalloutMock.class, new MockHttpResponse());
 
         // Create parent record (no fields needed)
-        Claim_Reversal_Request__c parent = new Claim_Reversal_Request__c();
+        Claim_Reversal_Request__c parent = new Claim_Reversal_Request__c(Entity__c = 'Test');
         insert parent;
 
         // Build CSV rows (including header)
@@ -43,6 +43,8 @@ private class ClaimReversalQueueableTest {
         // Enqueue first batch (size 2 to force chaining)
         System.enqueueJob(new ClaimReversalQueueable(
             parent.Id,
+            'Claim Request Name',
+            'DeviceName',
             rows,
             0,
             2, // small batch size to test chaining
@@ -71,7 +73,7 @@ private class ClaimReversalQueueableTest {
     static void testCalloutFailure_RecordsAsFail() {
         Test.setMock(HttpCalloutMock.class, new MockHttpFailResponse());
 
-        Claim_Reversal_Request__c parent = new Claim_Reversal_Request__c();
+        Claim_Reversal_Request__c parent = new Claim_Reversal_Request__c(Entity__c = 'Test');
         insert parent;
 
         List<List<String>> rows = new List<List<String>>{
@@ -80,8 +82,17 @@ private class ClaimReversalQueueableTest {
         };
 
         Test.startTest();
-        System.enqueueJob(new ClaimReversalQueueable(parent.Id, rows, 0, 10,
-            new List<List<String>>(), new List<List<String>>(), new List<List<String>>()));
+        System.enqueueJob(new ClaimReversalQueueable(
+            parent.Id,
+            'Claim Request Name',
+            'DeviceName',
+            rows, 
+            0, 
+            10,
+            new List<List<String>>(), 
+            new List<List<String>>(), 
+            new List<List<String>>()
+        ));
         Test.stopTest();
 
         ContentVersion failCv = [
@@ -98,12 +109,14 @@ private class ClaimReversalQueueableTest {
     
     @IsTest
     static void testEmptyRows_DoesNothing() {
-        Claim_Reversal_Request__c parent = new Claim_Reversal_Request__c();
+        Claim_Reversal_Request__c parent = new Claim_Reversal_Request__c(Entity__c = 'Test');
         insert parent;
 
         Test.startTest();
         System.enqueueJob(new ClaimReversalQueueable(
             parent.Id,
+            'Claim Request Name',
+            'DeviceName',
             new List<List<String>>(), // empty rows
             0, 10,
             new List<List<String>>(), new List<List<String>>(), new List<List<String>>()
